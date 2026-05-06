@@ -1,56 +1,92 @@
+import os
 import time
 import threading
 from llm.bug_fixer import explain_error
 from ocr.screen_reader import capture_screen, extract_text
 from ui.floating_window import FloatingWindow
+from rag.indexer import index_codebase
+from rag.retriever import load_vectorstore, retrieve_context
 from config import CAPTURE_INTERVAL
 
-def run_loop(window):
+
+def run_loop(window: FloatingWindow, vectorstore):
     while True:
         try:
-            print("\n[🔁] LOOP STARTING...")
-            response = ""
-            display = "✅ No bug detected."
+            print("\n[🔁] Capturing screen...")
 
             img_path = capture_screen()
-            print("[📸] Screenshot taken:", img_path)
-
             text = extract_text(img_path)
-            print("[🧾] OCR Result:\n", text[:300])
+            print(f"[🧾] OCR ({len(text)} chars): {text[:200]!r}")
 
-            if "Traceback" in text or "Error" in text or "Exception" in text:
-                print("[⚠] Bug detected! Sending to Mistral...")
-                response = explain_error(text)
+            if any(kw in text for kw in ("Traceback", "Error", "Exception", "SyntaxError")):
+                print("[⚠] Error detected — retrieving context...")
+
+                # RAG: find relevant code from the indexed codebase
+                context = ""
+                if vectorstore:
+                    context = retrieve_context(vectorstore, text)
+                    if context:
+                        print(f"[🔍] Retrieved {len(context)} chars of context")
+                    else:
+                        print("[🔍] No relevant context found in index")
+
+                print("[🤖] Querying Mistral...")
+                response = explain_error(text, context=context)
 
                 if response:
-                    print("[✅] Got response:\n", response[:300])
-                    display = f"🪲 Error:\n{text[:300]}\n\n🛠 Fix:\n{response}"
+                    context_note = "📎 (with your codebase context)" if context else "📎 (no codebase indexed)"
+                    display = (
+                        f"🪲 Detected Error {context_note}:\n"
+                        f"{text[:400]}\n\n"
+                        f"{'─' * 40}\n\n"
+                        f"🛠 Fix:\n{response}"
+                    )
                 else:
-                    print("[❌] Mistral gave no response.")
-                    display = "⚠ Bug detected, but no fix returned."
+                    display = "⏭ Same error as before — no new query sent."
             else:
-                print("[✅] No error found on screen.")
+                display = "✅ No errors detected on screen."
+
+            window.update_text(display)
 
         except Exception as e:
-            print("[💥] Loop crashed:", e)
-            display = f"💥 Crash in loop:\n{e}\n\n🧠 Last response:\n{response or '[no reply]'}"
-
-        print("[📤] Updating floating window...")
-        window.update_text(display)
+            print(f"[💥] Loop error: {e}")
+            window.update_text(f"💥 Internal error:\n{e}")
 
         time.sleep(CAPTURE_INTERVAL)
 
-def main():
-    print("[🚀] Starting Live Bug Explainer...")
 
+def main():
+    print("[🚀] Bug Vision starting...")
+
+    # ── RAG Setup ───────────────────────────────────────────────
+    # Ask the user which project to index (or skip)
+    project_path = input(
+        "\n[📂] Enter path to your project folder to index (or press Enter to skip): "
+    ).strip()
+
+    vectorstore = None
+
+    if project_path and os.path.isdir(project_path):
+        # Index the codebase (safe to re-run — overwrites old index)
+        index_codebase(project_path)
+        vectorstore = load_vectorstore()
+        print("[✅] RAG ready — Mistral will use your codebase as context")
+    else:
+        print("[⚠] No project indexed — running without RAG context")
+
+    # ── Start loop ──────────────────────────────────────────────
     window = FloatingWindow()
 
-    t = threading.Thread(target=run_loop, args=(window,))
-    t.daemon = True
-    t.start()
+    thread = threading.Thread(
+        target=run_loop,
+        args=(window, vectorstore),
+        daemon=True,
+    )
+    thread.start()
 
-    print("[🪟] Running floating window GUI...")
+    print(f"[ℹ] Watching screen every {CAPTURE_INTERVAL}s. Close the window to stop.")
     window.run()
+
 
 if __name__ == "__main__":
     main()

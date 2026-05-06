@@ -3,35 +3,33 @@ import re
 from datetime import datetime
 from PIL import ImageGrab, Image
 import pytesseract
-from config import TESSERACT_PATH
+from config import TESSERACT_PATH, CAPTURE_BBOX, SCREENSHOTS_PATH
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-SAVE_PATH = os.path.join(os.getcwd(), "screenshots")
-os.makedirs(SAVE_PATH, exist_ok=True)  # ✅ ensure the folder exists
+os.makedirs(SCREENSHOTS_PATH, exist_ok=True)
 
 
 def capture_screen():
-    # 🖼 Replace with your actual coordinates (top-left to bottom-right of terminal/editor)
-    bbox = (363, 617, 1844, 1041)  # 👈 Change this based on your screen layout
-
-    img = ImageGrab.grab(bbox=bbox)
+    img = ImageGrab.grab(bbox=CAPTURE_BBOX)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = os.path.join(SAVE_PATH, f"screenshot_{timestamp}.png")
+    file_path = os.path.join(SCREENSHOTS_PATH, f"screenshot_{timestamp}.png")
     img.save(file_path)
     return file_path
 
 
 def extract_text(image_path):
     img = Image.open(image_path)
-    text = pytesseract.image_to_string(img)
 
-    # 🧹 Clean OCR result with regex
-    cleaned_text = re.sub(r'[^A-Za-z0-9:()\[\]\n\/\.\'\"\-\_\=\>\<\s]', '', text)
+    # Use LSTM OCR engine for better accuracy on code/terminal text
+    custom_config = r"--oem 3 --psm 6"
+    text = pytesseract.image_to_string(img, config=custom_config)
 
-    # Remove tiny garbage lines
-    lines = cleaned_text.splitlines()
-    filtered_lines = [line for line in lines if len(line.strip()) > 10]
-    cleaned_text = "\n".join(filtered_lines)
+    # Light cleanup only — remove non-printable characters but keep
+    # all symbols that appear in Python tracebacks and code
+    text = re.sub(r"[^\x20-\x7E\n]", "", text)
 
-    return cleaned_text
-
+    # Only drop lines that are pure whitespace or single characters
+    # (don't filter by length — short lines matter in tracebacks)
+    lines = text.splitlines()
+    filtered = [line for line in lines if line.strip()]
+    return "\n".join(filtered)
